@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — CloudMart{% endblock %}
+{% block content %}
+<div class="row">
+  <div class="col-md-5">
+    {% if product.image_url %}
+    <img src="{{ product.image_url }}" class="img-fluid border rounded p-3" alt="{{ product.name }}">
+    {% endif %}
+  </div>
+  <div class="col-md-7">
+    <h3>{{ product.name }}</h3>
+    <p class="text-muted">{{ product.description }}</p>
+    <h4 class="text-danger">₹{{ "%.2f"|format(product.price) }}</h4>
+    <p class="text-muted">In stock: {{ product.stock }}</p>
+    <form method="POST" action="{{ url_for('add_to_cart', product_id=product['id']) }}" class="d-flex gap-2">
+      <input type="number" name="qty" value="1" min="1" class="form-control" style="max-width:100px">
+      <button class="btn btn-warning">Add to Cart</button>
+    </form>
+    <a href="{{ url_for('index') }}" class="btn btn-link mt-2">&larr; Back to shop</a>
+  </div>
+</div>
+{% endblock %}

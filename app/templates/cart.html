@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Your Cart — CloudMart{% endblock %}
+{% block content %}
+<h4>Your Cart</h4>
+{% if not items %}
+<p>Your cart is empty. <a href="{{ url_for('index') }}">Continue shopping</a></p>
+{% else %}
+<table class="table align-middle">
+  <thead><tr><th>Product</th><th>Price</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead>
+  <tbody>
+    {% for p in items %}
+    <tr>
+      <td>{{ p.name }}</td>
+      <td>₹{{ "%.2f"|format(p.price) }}</td>
+      <td style="max-width:100px">
+        <form method="POST" action="{{ url_for('update_cart', product_id=p['id']) }}" class="d-flex gap-1">
+          <input type="number" name="qty" value="{{ p.qty }}" min="0" class="form-control form-control-sm">
+          <button class="btn btn-sm btn-outline-secondary">Update</button>
+        </form>
+      </td>
+      <td>₹{{ "%.2f"|format(p.subtotal) }}</td>
+      <td><a href="{{ url_for('remove_from_cart', product_id=p['id']) }}" class="text-danger">Remove</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<div class="text-end">
+  <h5>Total: ₹{{ "%.2f"|format(total) }}</h5>
+  <a href="{{ url_for('checkout') }}" class="btn btn-warning">Proceed to Checkout</a>
+</div>
+{% endif %}
+{% endblock %}

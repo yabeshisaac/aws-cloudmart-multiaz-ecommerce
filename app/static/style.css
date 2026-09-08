@@ -1,0 +1,4 @@
+.cloudmart-nav { background-color: #131921; }
+.product-card img { height: 160px; object-fit: contain; }
+.product-card { transition: box-shadow .15s ease-in-out; }
+.product-card:hover { box-shadow: 0 0 10px rgba(0,0,0,0.15); }

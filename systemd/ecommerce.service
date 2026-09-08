@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudMart Flask App
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ecommerce-app
+EnvironmentFile=/etc/ecommerce/env
+ExecStart=/opt/ecommerce-app/venv/bin/gunicorn -w 3 -b 0.0.0.0:80 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
