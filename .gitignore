@@ -1,0 +1,27 @@
+# Secrets / environment files
+.env
+env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+.venv/
+pip-wheel-metadata/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / runtime
+*.log
+*.pid
+
+# Archives / deployment bundles
+*.zip
