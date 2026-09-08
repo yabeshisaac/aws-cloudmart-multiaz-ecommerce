@@ -38,7 +38,7 @@ The application provides a public product storefront, authenticated checkout, or
           │
      Writer + Reader
 
-                          +
+                         +
                    Amazon Cognito
                   User Authentication
                    Users / Admins
@@ -53,7 +53,7 @@ The VPC spans two Availability Zones and separates public, private application, 
 CloudMart demonstrates a complete AWS-hosted e-commerce workflow with:
 
 - Public storefront accessible without authentication
-- Shopping cart and checkout
+- Shopping cart and authenticated checkout
 - Amazon Cognito user authentication
 - Email confirmation and login
 - Role-based access for customers and administrators
@@ -67,6 +67,8 @@ CloudMart demonstrates a complete AWS-hosted e-commerce workflow with:
 - Admin order approval and rejection
 - Customer order status tracking
 - IAM-based AWS service access
+- AWS Systems Manager Parameter Store for Cognito configuration
+- Linux systemd services for the web application and worker
 
 ---
 
@@ -82,7 +84,8 @@ CloudMart demonstrates a complete AWS-hosted e-commerce workflow with:
 | Amazon S3 | Stores product images and deployment artifacts |
 | Amazon SQS | Decouples checkout from order processing |
 | Amazon Cognito | User authentication and role management |
-| AWS IAM | Least-privilege access between AWS services |
+| AWS IAM | Controls access between AWS resources |
+| AWS Systems Manager Parameter Store | Stores Cognito configuration securely |
 | Amazon CloudWatch | Metrics and operational monitoring |
 | NAT Gateway | Outbound connectivity for private instances |
 
@@ -131,6 +134,8 @@ Application Load Balancer
 
 The ALB forwards requests only to healthy instances registered with its target group.
 
+The Flask application exposes a `/healthz` endpoint that returns an HTTP `200` response for health checking.
+
 ![Application Load Balancer](screenshots/application-load-balancer.png)
 
 ---
@@ -172,6 +177,8 @@ The database tier includes:
 
 The application tier connects privately to Aurora for product, order, and order-item data.
 
+The Flask application uses PyMySQL for database connectivity.
+
 ![Aurora Multi-AZ](screenshots/aurora-multiaz.png)
 
 ---
@@ -183,7 +190,22 @@ Amazon S3 is used for:
 1. Product image storage
 2. Application deployment artifacts under `deploy/app/`
 
-Product images remain private and are delivered to the application using presigned URLs.
+The media bucket remains private.
+
+Instead of exposing product objects publicly, the application generates temporary S3 presigned URLs for displaying product images.
+
+```text
+Private S3 Object
+       │
+       ▼
+Flask Application
+       │
+       ▼
+Presigned URL
+       │
+       ▼
+Customer Browser
+```
 
 ![Amazon S3](screenshots/s3-bucket.png)
 
@@ -197,7 +219,7 @@ Amazon SQS decouples customer checkout from backend order processing.
 Customer Checkout
        │
        ▼
-    Aurora
+     Aurora
 Create PENDING Order
        │
        ▼
@@ -216,7 +238,11 @@ Admin Approve / Reject
 Customer Order Status
 ```
 
-This allows checkout to complete without waiting for background order processing.
+When checkout completes, the application stores the order in Aurora and publishes an order message to Amazon SQS.
+
+A separate background worker long-polls the queue and handles the message asynchronously.
+
+This allows the customer-facing checkout flow to remain decoupled from background processing.
 
 ![Amazon SQS](screenshots/sqs-queue.png)
 
@@ -236,7 +262,10 @@ Amazon Cognito handles:
 - Email confirmation
 - Login
 - Authentication
-- Role-based access
+- ID token generation
+- Role-based administrator access
+
+The application verifies Cognito ID tokens before establishing the authenticated application session.
 
 ![Cognito User Pool](screenshots/cognito-user-pool.png)
 
@@ -250,20 +279,39 @@ This allows the application to distinguish between:
 Guest
   │
   ├── Browse Products
-  │
+  └── Use Shopping Cart
+
 User
   │
   ├── Checkout
   └── View Orders
-  │
+
 Admin
   │
-  ├── View Processing Orders
+  ├── View Orders
   ├── Approve Orders
   └── Reject Orders
 ```
 
 ![Cognito Admin Group](screenshots/cognito-admin-group.png)
+
+---
+
+## AWS Systems Manager Parameter Store
+
+Cognito configuration is retrieved by the application from AWS Systems Manager Parameter Store.
+
+The application expects the following parameters:
+
+```text
+/ecommerce/COGNITO_USER_POOL_ID
+/ecommerce/COGNITO_CLIENT_ID
+/ecommerce/COGNITO_CLIENT_SECRET
+```
+
+The Cognito client secret is requested with decryption enabled rather than being hardcoded into the application source.
+
+Runtime database credentials and Flask secrets are also kept outside the GitHub source code.
 
 ---
 
@@ -273,13 +321,17 @@ Admin
 
 Guests can browse the product catalog without creating an account.
 
+Product information is retrieved from Aurora MySQL, while private product images are displayed using temporary Amazon S3 presigned URLs.
+
 ![CloudMart Storefront](screenshots/storefront.png)
 
 ---
 
 ## 2. Shopping Cart
 
-Customers can add products and modify quantities before authentication.
+Customers can add products to their cart and modify quantities before authentication.
+
+Cart data is maintained using the application's signed Flask session.
 
 ---
 
@@ -287,7 +339,23 @@ Customers can add products and modify quantities before authentication.
 
 Authentication is required when the customer proceeds to checkout.
 
-Amazon Cognito handles the login process.
+Amazon Cognito handles:
+
+```text
+Sign Up
+   │
+   ▼
+Email Confirmation
+   │
+   ▼
+Login
+   │
+   ▼
+Token Verification
+   │
+   ▼
+Authenticated Session
+```
 
 ---
 
@@ -306,33 +374,88 @@ When an order is placed:
 ```text
 Checkout
    │
-   ├──► Aurora → PENDING order
+   ├──► Aurora → PENDING Order
    │
-   └──► Amazon SQS → Order message
+   └──► Amazon SQS → Order Message
                          │
                          ▼
                   Background Worker
                          │
                          ▼
-                    PROCESSING
+                     PROCESSING
 ```
 
-The customer receives confirmation immediately while backend processing happens asynchronously.
+The SQS worker long-polls the queue, processes the order message, changes the order status to `PROCESSING`, and removes the successfully processed message from the queue.
 
 ---
 
 ## 6. Admin Dashboard
 
-Administrators can view orders that have reached the `PROCESSING` state.
+Administrators can view customer orders through the protected admin dashboard.
 
-They can then:
-
-- Approve an order
-- Reject an order
+Orders in `PENDING` or `PROCESSING` state can be approved or rejected.
 
 ![Admin Dashboard](screenshots/admin-dashboard.png)
 
-When approved, the order is marked as shipped and the updated status becomes visible to the customer.
+When approved, the order is marked `SHIPPED`.
+
+When rejected, the order is marked `REJECTED`.
+
+The updated status becomes visible to the customer through **My Orders**.
+
+---
+
+# Application Source Code
+
+The repository contains the Flask application source used by CloudMart.
+
+The application implements:
+
+- Flask web application
+- Product catalog
+- Shopping cart
+- Authenticated checkout
+- Amazon Cognito authentication
+- Cognito ID token verification
+- Cognito administrator group authorization
+- Aurora MySQL database access
+- Amazon S3 presigned product image URLs
+- Amazon SQS order publishing
+- Background SQS worker
+- Customer order history
+- Administrator order management
+- Application health endpoint
+
+### Main Application Components
+
+```text
+app.py
+        Main Flask application and routes
+
+auth_utils.py
+        Amazon Cognito authentication and token verification
+
+config.py
+        Environment and SSM-based application configuration
+
+db.py
+        Aurora MySQL database operations
+
+s3_utils.py
+        S3 presigned URL and object operations
+
+sqs_utils.py
+        Publishes order messages to Amazon SQS
+
+worker.py
+        Long-polls SQS and processes orders
+
+templates/
+        Flask/Jinja HTML templates
+
+static/
+        Application CSS
+```
 
 ---
 
@@ -354,9 +477,15 @@ Runs the Flask application using Gunicorn.
 ecommerce-worker.service
 ```
 
-Continuously polls Amazon SQS and processes incoming order messages.
+Runs the independent Python SQS worker responsible for asynchronous order processing.
 
-Both services were verified as active and running.
+Both service definitions are included under:
+
+```text
+systemd/
+```
+
+Both services were verified as active and running during deployment.
 
 ![Application Service Health](screenshots/service-health.png)
 
@@ -369,14 +498,19 @@ The project applies several AWS security practices:
 - Application instances run in private subnets.
 - Aurora database instances run in private database subnets.
 - Only the Application Load Balancer is internet-facing.
-- Private instances use a NAT Gateway for outbound connectivity.
-- Amazon Cognito handles passwords and authentication.
+- Private instances use a NAT Gateway for required outbound connectivity.
+- Amazon Cognito handles user passwords and authentication.
 - Cognito groups provide server-side role-based access.
+- Cognito ID tokens are cryptographically verified by the application.
 - S3 Block Public Access keeps the media bucket private.
 - Product images are accessed using short-lived presigned URLs.
-- EC2 uses an IAM role for S3 and SQS access.
-- IAM permissions are scoped to required resources.
+- EC2 uses an IAM role to access required AWS services.
 - Database credentials and application secrets are kept outside source control.
+- Cognito configuration is retrieved from SSM Parameter Store.
+- Sensitive values are excluded using `.gitignore`.
+- `.env.example` documents required configuration without exposing credentials.
+
+> **Security Note:** Real environment files, database passwords, Flask secret keys, AWS credentials, and Cognito client secrets are intentionally excluded from this repository.
 
 ---
 
@@ -405,10 +539,10 @@ The project applies several AWS security practices:
           │                                  │
           └────────────────┬─────────────────┘
                            ▼
-                     Order Status
+                      Order Status
                            │
                            ▼
-                     Admin Action
+                      Admin Action
                            │
                            ▼
                    Customer My Orders
@@ -421,7 +555,36 @@ The project applies several AWS security practices:
 ```text
 aws-cloudmart-multiaz-ecommerce/
 │
-├── README.md
+├── app/
+│   ├── app.py
+│   ├── auth_utils.py
+│   ├── config.py
+│   ├── db.py
+│   ├── s3_utils.py
+│   ├── sqs_utils.py
+│   ├── worker.py
+│   ├── requirements.txt
+│   │
+│   ├── templates/
+│   │   ├── 404.html
+│   │   ├── admin_orders.html
+│   │   ├── base.html
+│   │   ├── cart.html
+│   │   ├── checkout.html
+│   │   ├── confirm.html
+│   │   ├── index.html
+│   │   ├── login.html
+│   │   ├── my_orders.html
+│   │   ├── order_success.html
+│   │   ├── product.html
+│   │   └── signup.html
+│   │
+│   └── static/
+│       └── style.css
+│
+├── systemd/
+│   ├── ecommerce.service
+│   └── ecommerce-worker.service
 │
 ├── screenshots/
 │   ├── architecture-diagram.png
@@ -440,9 +603,44 @@ aws-cloudmart-multiaz-ecommerce/
 │   ├── admin-dashboard.png
 │   └── service-health.png
 │
-└── doc/
-    └── CloudMart AWS Project Documentation.pdf
+├── doc/
+│   └── CloudMart AWS Project Documentation.pdf
+│
+├── .env.example
+├── .gitignore
+├── SOURCE_README.md
+└── README.md
 ```
+
+---
+
+# Configuration
+
+The real runtime environment file is intentionally excluded from this repository.
+
+A safe example is provided:
+
+```text
+.env.example
+```
+
+It documents configuration for:
+
+```text
+DB_HOST
+DB_USER
+DB_PASSWORD
+DB_NAME
+DB_PORT
+S3_BUCKET
+AWS_REGION
+SQS_QUEUE_URL
+SECRET_KEY
+```
+
+Cognito configuration is retrieved separately from AWS Systems Manager Parameter Store.
+
+**Never commit the real `env` or `.env` file to source control.**
 
 ---
 
@@ -465,22 +663,28 @@ This project provided hands-on experience with:
 - EC2 Auto Scaling
 - Target group health checks
 - Amazon Aurora MySQL
+- Python database connectivity with PyMySQL
 - Amazon S3 private object access
 - S3 presigned URLs
 - Asynchronous processing with Amazon SQS
+- SQS long polling
 - Amazon Cognito authentication
-- Role-based access control
+- Cognito ID token verification
+- Role-based access using Cognito groups
+- AWS Systems Manager Parameter Store
 - IAM instance roles
 - Linux systemd services
+- Gunicorn application deployment
 - Application health verification
+- Separating application configuration from source code
 - Designing for high availability and fault tolerance
 
 ---
 
 # Key AWS Concepts Demonstrated
 
-`AWS` • `Multi-AZ` • `High Availability` • `Amazon VPC` • `ALB` • `EC2` • `Auto Scaling` • `Aurora MySQL` • `Amazon S3` • `Amazon SQS` • `Amazon Cognito` • `IAM` • `CloudWatch` • `NAT Gateway` • `Private Subnets` • `Three-Tier Architecture`
+`AWS` • `Multi-AZ` • `High Availability` • `Amazon VPC` • `ALB` • `EC2` • `Auto Scaling` • `Aurora MySQL` • `Amazon S3` • `Amazon SQS` • `Amazon Cognito` • `IAM` • `SSM Parameter Store` • `CloudWatch` • `NAT Gateway` • `Private Subnets` • `Presigned URLs` • `Three-Tier Architecture`
 
 ---
 
-CloudMart was built as a hands-on AWS project to demonstrate how compute, networking, databases, storage, messaging, authentication, and security services can be combined into a highly available e-commerce architecture.
+CloudMart was built as a hands-on AWS project to demonstrate how compute, networking, databases, storage, messaging, authentication, security, and application components can be combined into a highly available e-commerce architecture.
